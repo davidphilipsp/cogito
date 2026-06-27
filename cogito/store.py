@@ -20,6 +20,12 @@ CREATE TABLE IF NOT EXISTS vectors (
     dim     INTEGER,
     vec     BLOB
 );
+CREATE TABLE IF NOT EXISTS edges (
+    src   TEXT,
+    dst   TEXT,
+    label TEXT,
+    PRIMARY KEY (src, dst, label)
+);
 """
 
 
@@ -61,6 +67,10 @@ class Store:
             'body': row[4], 'links': json.loads(row[5]), 'hash': row[6], 'mtime': row[7],
         }
 
+    def valid_note_ids(self) -> set[str]:
+        rows = self.conn.execute('SELECT id FROM notes').fetchall()
+        return {r[0] for r in rows}
+
     # --- vectors ---
 
     def upsert_vector(self, note_id: str, vec: np.ndarray) -> None:
@@ -75,10 +85,30 @@ class Store:
         rows = self.conn.execute('SELECT note_id, dim, vec FROM vectors').fetchall()
         return [(r[0], np.frombuffer(r[2], dtype=np.float32)) for r in rows]
 
+    # --- edges ---
+
+    def upsert_edges(self, src: str, edges: list[dict]) -> None:
+        """Replace all edges for src, ignoring self-loops."""
+        self.conn.execute('DELETE FROM edges WHERE src = ?', (src,))
+        rows = [
+            (src, e['target'], e['label'])
+            for e in edges
+            if e['target'] != src
+        ]
+        if rows:
+            self.conn.executemany(
+                'INSERT OR IGNORE INTO edges (src, dst, label) VALUES (?, ?, ?)', rows
+            )
+        self.conn.commit()
+
+    def all_edges(self) -> list[tuple[str, str, str]]:
+        """Return (src, dst, label) for every stored edge."""
+        return self.conn.execute('SELECT src, dst, label FROM edges').fetchall()
+
     # --- maintenance ---
 
     def clear(self) -> None:
-        self.conn.executescript('DELETE FROM notes; DELETE FROM vectors;')
+        self.conn.executescript('DELETE FROM notes; DELETE FROM vectors; DELETE FROM edges;')
         self.conn.commit()
 
     def clear_vectors(self) -> None:
